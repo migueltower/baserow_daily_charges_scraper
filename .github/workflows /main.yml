@@ -2,7 +2,7 @@ name: Daily Court Charge Updater
 
 on:
   schedule:
-    - cron: '25 9 * * 1-5'   # Runs at 08:25 UTC, Monday–Friday
+    - cron: '25 9 * * 1-5'   # Runs at 09:25 UTC, Monday–Friday
   workflow_dispatch:         # Allows manual trigger
 
 jobs:
@@ -10,20 +10,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
-
-      - name: Install pipenv
-        run: pip install pipenv
+        uses: actions/checkout@v3
 
       - name: Setup Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
           python-version: '3.11'
+
+      - name: Install pipenv
+        run: pip install --upgrade pip pipenv
 
       - name: Install dependencies
         run: pipenv install
 
-      - name: Run fetch_charges.py
+      - name: Run fetch_charges.py (Baserow)
         env:
-          KEY: ${{ secrets.KEY }}
+          BASEROW_TOKEN: ${{ secrets.BASEROW_TOKEN }}
+          BASEROW_TABLE_ID: ${{ secrets.BASEROW_TABLE_ID }}
         run: pipenv run python fetch_charges.py
