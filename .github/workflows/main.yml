@@ -8,23 +8,27 @@ on:
 jobs:
   fetch-charges:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
       - name: Install pipenv
-        run: pip install --upgrade pip pipenv
+        run: |
+          python -m pip install --upgrade pip pipenv
 
       - name: Install dependencies
-        run: pipenv install
+        run: |
+          pipenv install --deploy --ignore-pipfile
 
       - name: Run fetch_charges.py (Baserow)
         env:
           BASEROW_TOKEN: ${{ secrets.BASEROW_TOKEN }}
           BASEROW_TABLE_ID: ${{ secrets.BASEROW_TABLE_ID }}
-        run: pipenv run python fetch_charges.py
+        run: |
+          pipenv run python fetch_charges.py
