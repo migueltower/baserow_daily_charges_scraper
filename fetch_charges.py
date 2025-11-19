@@ -9,6 +9,9 @@ import requests
 from datetime import datetime
 from bs4 import BeautifulSoup
 
+import urllib3
+from requests.exceptions import SSLError
+
 # ---------------------------
 # CONFIGURATION
 # ---------------------------
@@ -28,6 +31,8 @@ STATIC_HEADERS = {
     "DNT": "1"
 }
 
+# Disable warnings when falling back to verify=False
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ---------------------------
 # BASEROW HELPERS
@@ -40,7 +45,7 @@ def baserow_session():
 
 
 def list_rows(session, page_size=200):
-    """Yield (row_id, fields_dict) for all rows in the table (paginated)."""
+    """Yield (row_id, case_number, full_row_dict) for all rows in the table (paginated)."""
     url = f"{BASEROW_API}/database/rows/table/{TABLE_ID}/?user_field_names=true&size={page_size}"
     while url:
         resp = session.get(url, timeout=60)
@@ -84,17 +89,18 @@ def extract_charge_with_priority(soup):
                     first_charge = description
                 if "MURDER" in description.upper():
                     return description
+
     return first_charge
 
 
 def extract_today_event(soup):
-    """Look for an event row that matches today's date."""
-    today_str = datetime.now().strftime("%-m/%-d/%Y").replace("/0", "/")
-    calendar_section = soup.find("div", id="tblForms4")
-    if not calendar_section:
+    """Extract today's event from 'Case Minutes' / events section if present."""
+    today_str = datetime.now().strftime("%m/%d/%Y")
+    events_section = soup.find("div", id="divCaseMinutesGrid")
+    if not events_section:
         return None
 
-    rows = calendar_section.find_all("div", class_="row g-0")
+    rows = events_section.find_all("div", class_="row g-0")
     for row in rows:
         cols = row.find_all("div")
         if len(cols) >= 6 and cols[1].get_text(strip=True) == today_str:
@@ -138,7 +144,14 @@ def process_cases():
 
         full_url = BASE_URL + case_number
         try:
-            response = http.get(full_url, timeout=60)
+            # First try with normal SSL verification
+            try:
+                response = http.get(full_url, timeout=60)
+            except SSLError as e:
+                print(f"[{case_number}] ⚠️ SSL error when fetching {full_url}: {e}")
+                print(f"[{case_number}] ⚠️ Retrying without SSL verification (verify=False).")
+                response = http.get(full_url, timeout=60, verify=False)
+
             print(f"[{case_number}] 🔍 Status: {response.status_code}")
             if response.status_code != 200:
                 print(f"[{case_number}] ❌ Failed with status {response.status_code}")
@@ -148,12 +161,12 @@ def process_cases():
             soup = BeautifulSoup(response.text, "html.parser")
 
             if page_has_error_message(soup, case_number):
+                # Save page for debugging
                 with open(f"error_page_{case_number}.html", "w", encoding="utf-8") as f:
                     f.write(response.text)
                 skipped += 1
                 continue
 
-            # --- Extract details
             charge = extract_charge_with_priority(soup)
             today_event = extract_today_event(soup)
 
@@ -161,7 +174,8 @@ def process_cases():
             if charge:
                 fields_to_update["Crime"] = charge
             if today_event:
-                fields_to_update["Case Number Links"] = today_event  # same as Airtable
+                # Assuming this field name matches your Baserow table
+                fields_to_update["Case Number Links"] = today_event
 
             if fields_to_update:
                 print(f"[{case_number}] ✅ Updating Baserow row {row_id}: {fields_to_update}")
@@ -175,7 +189,8 @@ def process_cases():
             print(f"[{case_number}] ❌ Request error: {e}")
             failed += 1
 
-        time.sleep(4)  # delay to avoid hammering the site
+        # delay to avoid hammering the site
+        time.sleep(4)
 
     print(f"✅ Done. Updated={updated}, Skipped={skipped}, Failed={failed}")
 
