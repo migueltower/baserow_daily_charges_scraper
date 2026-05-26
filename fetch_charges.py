@@ -1,7 +1,8 @@
 import os
 import time
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 
 # --- NEW: imports required for SSL fallback ---
@@ -18,6 +19,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 BASEROW_API = "https://api.baserow.io/api"
 TABLE_ID = os.getenv("BASEROW_TABLE_ID", "709546")
 TOKEN = os.environ["BASEROW_TOKEN"]
+
+ARIZONA_TZ = ZoneInfo("America/Phoenix")
 
 BASE_URL = (
     "https://www.superiorcourt.maricopa.gov/docket/CriminalCourtCases/caseInfo.asp?caseNumber="
@@ -44,14 +47,72 @@ def baserow_session():
 
 
 def list_rows(session, page_size=200):
-    url = f"{BASEROW_API}/database/rows/table/{TABLE_ID}/?user_field_names=true&size={page_size}"
+    """
+    List only Baserow rows created today in Arizona time.
+
+    This prevents the script from opening old case pages from prior runs.
+    """
+    today_arizona = datetime.now(ARIZONA_TZ).date()
+
+    url = f"{BASEROW_API}/database/rows/table/{TABLE_ID}/"
+
+    params = {
+        "user_field_names": "true",
+        "size": page_size,
+        "include": "Case #,Created",
+    }
+
+    checked = 0
+    yielded = 0
+
     while url:
-        resp = session.get(url, timeout=60)
+        if params:
+            resp = session.get(url, params=params, timeout=60)
+        else:
+            resp = session.get(url, timeout=60)
+
         resp.raise_for_status()
         data = resp.json()
+
         for row in data.get("results", []):
+            checked += 1
+
+            created_raw = row.get("Created")
+            if not created_raw:
+                continue
+
+            try:
+                # Baserow returns ISO-style datetime strings.
+                # This handles both "Z" and "+00:00" timezone formats.
+                created_dt = datetime.fromisoformat(
+                    str(created_raw).replace("Z", "+00:00")
+                )
+
+                # If Baserow ever returns a naive datetime, treat it as UTC.
+                if created_dt.tzinfo is None:
+                    created_dt = created_dt.replace(tzinfo=timezone.utc)
+
+                created_arizona_date = created_dt.astimezone(ARIZONA_TZ).date()
+
+            except ValueError:
+                print(f"[row {row.get('id')}] ⚠️ Could not parse Created date: {created_raw}")
+                continue
+
+            if created_arizona_date != today_arizona:
+                continue
+
+            yielded += 1
             yield row["id"], row.get("Case #"), row
+
         url = data.get("next")
+
+        # The "next" URL already contains the page query parameters.
+        params = None
+
+    print(
+        f"🔎 Checked {checked} Baserow row(s). "
+        f"Processing {yielded} row(s) created today in Arizona."
+    )
 
 
 def update_row(session, row_id, fields):
@@ -64,7 +125,7 @@ def update_row(session, row_id, fields):
 
 
 # ---------------------------
-# SCRAPER HELPERS (unchanged)
+# SCRAPER HELPERS
 # ---------------------------
 def extract_charge_with_priority(soup):
     charges_section = soup.find("div", id="tblDocket12")
@@ -91,7 +152,7 @@ def extract_charge_with_priority(soup):
 
 
 def extract_today_event(soup):
-    today_str = datetime.now().strftime("%-m/%-d/%Y").replace("/0", "/")
+    today_str = datetime.now(ARIZONA_TZ).strftime("%-m/%-d/%Y").replace("/0", "/")
 
     calendar_section = soup.find("div", id="tblForms4")
     if not calendar_section:
@@ -129,7 +190,7 @@ def page_has_error_message(soup, case_number):
 
 
 # ---------------------------
-# CORE LOGIC (ONLY SSL FIX ADDED)
+# CORE LOGIC
 # ---------------------------
 def process_cases():
     api = baserow_session()
@@ -143,6 +204,7 @@ def process_cases():
     for row_id, case_number, row in list_rows(api):
         case_number = str(case_number or "").strip()
         if not case_number:
+            skipped += 1
             continue
 
         full_url = BASE_URL + case_number
