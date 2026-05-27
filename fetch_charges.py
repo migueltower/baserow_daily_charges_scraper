@@ -50,7 +50,9 @@ def list_rows(session, page_size=200):
     """
     List only Baserow rows created today in Arizona time.
 
-    This prevents the script from opening old case pages from prior runs.
+    Handles both:
+    - date-only Created values, like "2026-05-27"
+    - full datetime Created values, like "2026-05-27T10:15:00.000000Z"
     """
     today_arizona = datetime.now(ARIZONA_TZ).date()
 
@@ -64,6 +66,7 @@ def list_rows(session, page_size=200):
 
     checked = 0
     yielded = 0
+    sample_created_values = []
 
     while url:
         if params:
@@ -78,21 +81,34 @@ def list_rows(session, page_size=200):
             checked += 1
 
             created_raw = row.get("Created")
+            if created_raw and len(sample_created_values) < 10:
+                sample_created_values.append(created_raw)
+
             if not created_raw:
                 continue
 
+            created_text = str(created_raw).strip()
+
             try:
-                # Baserow returns ISO-style datetime strings.
-                # This handles both "Z" and "+00:00" timezone formats.
-                created_dt = datetime.fromisoformat(
-                    str(created_raw).replace("Z", "+00:00")
-                )
+                # If Baserow returns only a date, compare it directly.
+                # Do NOT convert date-only values from UTC to Arizona time,
+                # because that can incorrectly shift the date backward.
+                if len(created_text) == 10 and created_text.count("-") == 2:
+                    created_arizona_date = datetime.strptime(
+                        created_text,
+                        "%Y-%m-%d"
+                    ).date()
 
-                # If Baserow ever returns a naive datetime, treat it as UTC.
-                if created_dt.tzinfo is None:
-                    created_dt = created_dt.replace(tzinfo=timezone.utc)
+                else:
+                    # If Baserow returns a full datetime, convert it to Arizona time.
+                    created_dt = datetime.fromisoformat(
+                        created_text.replace("Z", "+00:00")
+                    )
 
-                created_arizona_date = created_dt.astimezone(ARIZONA_TZ).date()
+                    if created_dt.tzinfo is None:
+                        created_dt = created_dt.replace(tzinfo=timezone.utc)
+
+                    created_arizona_date = created_dt.astimezone(ARIZONA_TZ).date()
 
             except ValueError:
                 print(f"[row {row.get('id')}] ⚠️ Could not parse Created date: {created_raw}")
@@ -109,6 +125,8 @@ def list_rows(session, page_size=200):
         # The "next" URL already contains the page query parameters.
         params = None
 
+    print(f"🕓 Arizona today is: {today_arizona}")
+    print(f"🧪 Sample Baserow Created values: {sample_created_values}")
     print(
         f"🔎 Checked {checked} Baserow row(s). "
         f"Processing {yielded} row(s) created today in Arizona."
