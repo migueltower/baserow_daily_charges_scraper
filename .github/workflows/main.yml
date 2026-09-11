@@ -2,7 +2,7 @@ name: Daily Court Charge Updater 2
 
 on:
   schedule:
-    - cron: '45 12 * * 1-5'   # Runs at 09:25 UTC, Monday–Friday
+    - cron: '15 10 * * 1-5'   # Runs at 09:25 UTC, Monday–Friday
   workflow_dispatch:         # Allows manual trigger
 
 jobs:
